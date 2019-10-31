@@ -63,7 +63,7 @@ func main() {
 		logger.Fatal("failed-to-determine-depot-dir", err)
 	}
 
-	backend := houdini.NewBackend(depot)
+	backend := houdini.NewBackend(depot, logger)
 
 	gardenServer := server.New(*listenNetwork, *listenAddr, *containerGraceTime, backend, logger)
 

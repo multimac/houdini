@@ -1,10 +1,15 @@
 package process
 
 import (
-	"os/exec"
+	"context"
+	"io"
 	"sync"
 
 	"code.cloudfoundry.org/garden"
+	docker_types "github.com/docker/docker/api/types"
+	docker_container "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type process interface {
@@ -14,7 +19,10 @@ type process interface {
 }
 
 type Process struct {
-	id string
+	cli         *client.Client
+	id          string
+	containerID string
+	execID      string
 
 	process process
 
@@ -27,9 +35,12 @@ type Process struct {
 	stderr *fanoutWriter
 }
 
-func NewProcess(id string) *Process {
+func NewProcess(cli *client.Client, id string, containerID string, execID string) *Process {
 	return &Process{
-		id: id,
+		cli:         cli,
+		id:          id,
+		containerID: containerID,
+		execID:      execID,
 
 		waiting: &sync.Once{},
 
@@ -44,34 +55,55 @@ func (p *Process) ID() string {
 }
 
 func (p *Process) Wait() (int, error) {
-	p.waiting.Do(func() {
-		p.exitStatus, p.exitErr = p.process.Wait()
-
-		// don't leak stdin pipe
-		p.stdin.Close()
-	})
-
-	return p.exitStatus, p.exitErr
+	statusCh, errCh := p.cli.ContainerWait(context.Background(), p.containerID, docker_container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return -1, err
+		}
+	case body := <-statusCh:
+		return int(body.StatusCode), nil
+	}
+	return -1, nil
 }
 
 func (p *Process) SetTTY(tty garden.TTYSpec) error {
 	if tty.WindowSize != nil {
-		return p.process.SetWindowSize(*tty.WindowSize)
+		return p.cli.ContainerExecResize(context.Background(), p.execID, docker_types.ResizeOptions{
+			Height: uint(tty.WindowSize.Rows),
+			Width:  uint(tty.WindowSize.Columns),
+		})
 	}
 
 	return nil
 }
 
-func (p *Process) Start(cmd *exec.Cmd, tty *garden.TTYSpec) error {
-	process, stdin, err := spawn(cmd, tty, p.stdout, p.stderr)
+func (p *Process) Start(tty *garden.TTYSpec) error {
+	err := p.cli.ContainerExecStart(context.Background(), p.execID, docker_types.ExecStartCheck{
+		Detach: false,
+		Tty:    tty.WindowSize != nil,
+	})
+
 	if err != nil {
 		return err
 	}
 
-	p.stdin.AddSink(stdin)
+	resp, err := p.cli.ContainerExecAttach(context.Background(), p.execID, docker_types.ExecStartCheck{
+		Detach: false,
+		Tty:    tty.WindowSize != nil,
+	})
 
-	p.process = process
+	if err != nil {
+		return err
+	}
 
+	if tty.WindowSize == nil {
+		go stdcopy.StdCopy(p.stdout, p.stderr, resp.Reader)
+	} else {
+		go io.Copy(p.stdout, resp.Reader)
+	}
+
+	p.stdin.AddSink(resp.Conn)
 	return nil
 }
 
@@ -90,5 +122,5 @@ func (p *Process) Attach(processIO garden.ProcessIO) {
 }
 
 func (p *Process) Signal(signal garden.Signal) error {
-	return p.process.Signal(signal)
+	return nil
 }

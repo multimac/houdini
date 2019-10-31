@@ -1,18 +1,19 @@
 package houdini
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"code.cloudfoundry.org/garden"
-	"github.com/charlievieth/fs"
-	"github.com/concourse/go-archive/tarfs"
+	"code.cloudfoundry.org/lager"
+	docker_types "github.com/docker/docker/api/types"
+	docker_container "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	uuid "github.com/nu7hatch/gouuid"
 	"github.com/vito/houdini/process"
 )
 
@@ -24,28 +25,39 @@ func (err UndefinedPropertyError) Error() string {
 	return fmt.Sprintf("property does not exist: %s", err.Key)
 }
 
+type UnknownProcessError struct {
+	ProcessID string
+}
+
+func (e UnknownProcessError) Error() string {
+	return fmt.Sprintf("unknown process: %s", e.ProcessID)
+}
+
 type container struct {
-	spec garden.ContainerSpec
+	cli    *client.Client
+	spec   garden.ContainerSpec
+	logger lager.Logger
 
-	handle string
-
-	workDir   string
-	hasRootfs bool
+	handle         string
+	processes      map[string]*process.Process
+	processesMutex *sync.RWMutex
 
 	properties  garden.Properties
 	propertiesL sync.RWMutex
 
 	env []string
 
-	processTracker process.ProcessTracker
-
 	graceTime  time.Duration
 	graceTimeL sync.RWMutex
 }
 
-func (backend *Backend) newContainer(spec garden.ContainerSpec, id string) (*container, error) {
-	var workDir string
-	var hasRootfs bool
+func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerSpec) (*container, error) {
+	properties := spec.Properties
+	if properties == nil {
+		properties = garden.Properties{}
+	}
+
+	var image string
 	if spec.RootFSPath != "" {
 		rootfsURI, err := url.Parse(spec.RootFSPath)
 		if err != nil {
@@ -53,48 +65,66 @@ func (backend *Backend) newContainer(spec garden.ContainerSpec, id string) (*con
 		}
 
 		switch rootfsURI.Scheme {
-		case "raw":
-			workDir = rootfsURI.Path
-			hasRootfs = true
+		case "docker":
+			if rootfsURI.Fragment != "" {
+				image = rootfsURI.Path[1:] + ":" + rootfsURI.Fragment
+			} else {
+				image = rootfsURI.Path[1:] + ":latest"
+			}
 		default:
-			return nil, fmt.Errorf("unsupported rootfs uri (must be raw://): %s", spec.RootFSPath)
+			return nil, fmt.Errorf("unsupported rootfs uri (must be docker://): %s", spec.RootFSPath)
 		}
 	} else {
-		workDir = filepath.Join(backend.containersDir, id)
-
-		err := fs.MkdirAll(workDir, 0755)
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("unsupported spec")
 	}
 
-	properties := spec.Properties
-	if properties == nil {
-		properties = garden.Properties{}
+	reader, err := backend.cli.ImagePull(context.Background(), image, docker_types.ImagePullOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	loadResp, err := backend.cli.ImageLoad(context.Background(), reader, false)
+	if err != nil {
+		return nil, err
+	}
+	loadResp.Body.Close()
+
+	resp, err := backend.cli.ContainerCreate(context.Background(), &docker_container.Config{
+		Image:  image,
+		Cmd:    []string{"cmd.exe"},
+		Env:    spec.Env,
+		Labels: properties,
+	}, nil, nil, "")
+	if err != nil {
+		return nil, err
+	}
+
+	err = backend.cli.ContainerStart(context.Background(), resp.ID, docker_types.ContainerStartOptions{})
+	if err != nil {
+		return nil, err
 	}
 
 	return &container{
-		spec: spec,
+		cli:    backend.cli,
+		spec:   spec,
+		logger: logger.Session("container"),
 
-		handle: spec.Handle,
-
-		workDir:   workDir,
-		hasRootfs: hasRootfs,
+		handle:         resp.ID,
+		processes:      make(map[string]*process.Process),
+		processesMutex: new(sync.RWMutex),
 
 		properties: properties,
 
 		env: spec.Env,
-
-		processTracker: process.NewTracker(),
 	}, nil
 }
 
 func (container *container) cleanup() error {
-	if !container.hasRootfs {
-		return fs.RemoveAll(container.workDir)
-	}
-
-	return nil
+	return container.cli.ContainerRemove(context.Background(), container.handle, docker_types.ContainerRemoveOptions{
+		RemoveVolumes: true,
+		RemoveLinks:   true,
+		Force:         true,
+	})
 }
 
 func (container *container) Handle() string {
@@ -102,46 +132,21 @@ func (container *container) Handle() string {
 }
 
 func (container *container) Stop(kill bool) error {
-	return container.processTracker.Stop(kill)
+	return container.cli.ContainerStop(context.Background(), container.handle, nil)
 }
 
 func (container *container) Info() (garden.ContainerInfo, error) { return garden.ContainerInfo{}, nil }
 
 func (container *container) StreamIn(spec garden.StreamInSpec) error {
-	finalDestination := filepath.Join(container.workDir, filepath.FromSlash(spec.Path))
-
-	err := fs.MkdirAll(finalDestination, 0755)
-	if err != nil {
-		return err
-	}
-
-	err = tarfs.Extract(spec.TarStream, finalDestination)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return container.cli.CopyToContainer(context.Background(), container.handle, spec.Path, spec.TarStream, docker_types.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: false,
+		CopyUIDGID:                false,
+	})
 }
 
 func (container *container) StreamOut(spec garden.StreamOutSpec) (io.ReadCloser, error) {
-	if strings.HasSuffix(spec.Path, "/") {
-		spec.Path += "."
-	}
-
-	absoluteSource := container.workDir + string(os.PathSeparator) + filepath.FromSlash(spec.Path)
-
-	r, w := io.Pipe()
-
-	errs := make(chan error, 1)
-	go func() {
-		errs <- tarfs.Compress(w, filepath.Dir(absoluteSource), filepath.Base(absoluteSource))
-		_ = w.Close()
-	}()
-
-	return waitCloser{
-		ReadCloser: r,
-		wait:       errs,
-	}, nil
+	reader, _, err := container.cli.CopyFromContainer(context.Background(), container.handle, spec.Path)
+	return reader, err
 }
 
 type waitCloser struct {
@@ -191,21 +196,62 @@ func (container *container) NetOut(garden.NetOutRule) error { return nil }
 func (container *container) BulkNetOut([]garden.NetOutRule) error { return nil }
 
 func (container *container) Run(spec garden.ProcessSpec, processIO garden.ProcessIO) (garden.Process, error) {
-	cmd, err := container.cmd(spec)
+	resp, err := container.cli.ContainerExecCreate(context.Background(), container.handle, docker_types.ExecConfig{
+		User:         spec.User,
+		Env:          spec.Env,
+		Cmd:          append([]string{spec.Path}, spec.Args...),
+		WorkingDir:   spec.Dir,
+		AttachStdin:  processIO.Stdin != nil,
+		AttachStdout: processIO.Stdout != nil,
+		AttachStderr: processIO.Stderr != nil,
+		Tty:          spec.TTY.WindowSize != nil,
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	return container.processTracker.Run(
-		spec.ID,
-		cmd,
-		processIO,
-		spec.TTY,
-	)
+	container.processesMutex.Lock()
+	defer container.processesMutex.Unlock()
+
+	processID := spec.ID
+	if processID == "" {
+		uuid, err := uuid.NewV4()
+		if err != nil {
+			return nil, err
+		}
+
+		processID = uuid.String()
+	}
+
+	process := process.NewProcess(container.cli, processID, container.handle, resp.ID)
+
+	process.Attach(processIO)
+
+	err = process.Start(spec.TTY)
+	if err != nil {
+		return nil, err
+	}
+
+	container.processes[processID] = process
+
+	return process, nil
 }
 
 func (container *container) Attach(processID string, processIO garden.ProcessIO) (garden.Process, error) {
-	return container.processTracker.Attach(processID, processIO)
+	container.processesMutex.RLock()
+	process, ok := container.processes[processID]
+	container.processesMutex.RUnlock()
+
+	if !ok {
+		return nil, UnknownProcessError{processID}
+	}
+
+	process.Attach(processIO)
+
+	go container.waitAndReap(processID)
+
+	return process, nil
 }
 
 func (container *container) Property(name string) (string, error) {
@@ -275,4 +321,25 @@ func (container *container) currentGraceTime() time.Duration {
 	container.graceTimeL.RLock()
 	defer container.graceTimeL.RUnlock()
 	return container.graceTime
+}
+
+func (container *container) waitAndReap(processID string) {
+	container.processesMutex.RLock()
+	process, ok := container.processes[processID]
+	container.processesMutex.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	process.Wait()
+
+	container.unregister(processID)
+}
+
+func (container *container) unregister(processID string) {
+	container.processesMutex.Lock()
+	defer container.processesMutex.Unlock()
+
+	delete(container.processes, processID)
 }

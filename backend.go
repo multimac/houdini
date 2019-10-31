@@ -1,36 +1,57 @@
 package houdini
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/garden"
-	"github.com/charlievieth/fs"
+	"code.cloudfoundry.org/lager"
+
+	"github.com/docker/docker/client"
 )
 
 type Backend struct {
-	containersDir string
+	cli    *client.Client
+	logger lager.Logger
 
-	containers  map[string]*container
-	containersL sync.RWMutex
+	containersDir string
+	containers    map[string]*container
+	containersL   sync.RWMutex
 
 	containerNum uint32
 }
 
-func NewBackend(containersDir string) *Backend {
-	return &Backend{
-		containersDir: containersDir,
+func NewBackend(containersDir string, logger lager.Logger) *Backend {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		panic(err)
+	}
 
-		containers: make(map[string]*container),
+	return &Backend{
+		cli:    cli,
+		logger: logger.Session("backend"),
+
+		containersDir: containersDir,
+		containers:    make(map[string]*container),
 
 		containerNum: uint32(time.Now().UnixNano()),
 	}
 }
 
 func (backend *Backend) Start() error {
-	return fs.MkdirAll(backend.containersDir, 0755)
+	version, err := backend.cli.ServerVersion(context.Background())
+	if err != nil {
+		return err
+	}
+
+	backend.logger.Info("started", lager.Data{
+		"server-version": version.APIVersion,
+	})
+
+	return nil
 }
 
 func (backend *Backend) Stop() {
@@ -50,23 +71,18 @@ func (backend *Backend) Ping() error {
 }
 
 func (backend *Backend) Capacity() (garden.Capacity, error) {
-	println("NOT IMPLEMENTED: Capacity")
 	return garden.Capacity{}, nil
 }
 
 func (backend *Backend) Create(spec garden.ContainerSpec) (garden.Container, error) {
+
 	id := backend.generateContainerID()
 
 	if spec.Handle == "" {
 		spec.Handle = id
 	}
 
-	container, err := backend.newContainer(spec, id)
-	if err != nil {
-		return nil, err
-	}
-
-	err = container.setup()
+	container, err := backend.newContainer(backend.logger, spec)
 	if err != nil {
 		return nil, err
 	}
