@@ -13,8 +13,6 @@ import (
 	docker_types "github.com/docker/docker/api/types"
 	docker_container "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	uuid "github.com/nu7hatch/gouuid"
-	"github.com/vito/houdini/process"
 )
 
 type UndefinedPropertyError struct {
@@ -41,7 +39,7 @@ type container struct {
 	handle      string
 	containerId string
 
-	processes      map[string]*process.Process
+	processes      map[string]*process
 	processesMutex *sync.RWMutex
 
 	properties  garden.Properties
@@ -54,6 +52,8 @@ type container struct {
 }
 
 func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerSpec) (*container, error) {
+	logger = logger.Session("container")
+
 	properties := spec.Properties
 	if properties == nil {
 		properties = garden.Properties{}
@@ -80,6 +80,10 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 		return nil, fmt.Errorf("unsupported spec")
 	}
 
+	logger.Info("pulling-image", lager.Data{
+		"image": image,
+	})
+
 	reader, err := backend.cli.ImagePull(context.Background(), image, docker_types.ImagePullOptions{})
 	if err != nil {
 		return nil, err
@@ -101,25 +105,30 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 		return nil, err
 	}
 
-	err = backend.cli.ContainerStart(context.Background(), resp.ID, docker_types.ContainerStartOptions{})
-	if err != nil {
-		return nil, err
-	}
-
 	handle := resp.ID
 	if spec.Handle != "" {
 		handle = spec.Handle
 	}
 
+	logger.Info("container-created", lager.Data{
+		"image": image,
+		"id":    resp.ID,
+	})
+
+	err = backend.cli.ContainerStart(context.Background(), resp.ID, docker_types.ContainerStartOptions{})
+	if err != nil {
+		return nil, err
+	}
+
 	return &container{
 		cli:    backend.cli,
 		spec:   spec,
-		logger: logger.Session("container"),
+		logger: logger,
 
 		handle:      handle,
 		containerId: resp.ID,
 
-		processes:      make(map[string]*process.Process),
+		processes:      make(map[string]*process),
 		processesMutex: new(sync.RWMutex),
 
 		properties: properties,
@@ -129,6 +138,10 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 }
 
 func (container *container) cleanup() error {
+	container.logger.Info("removing-container", lager.Data{
+		"id": container.containerId,
+	})
+
 	return container.cli.ContainerRemove(context.Background(), container.containerId, docker_types.ContainerRemoveOptions{
 		RemoveVolumes: true,
 		RemoveLinks:   true,
@@ -141,6 +154,10 @@ func (container *container) Handle() string {
 }
 
 func (container *container) Stop(kill bool) error {
+	container.logger.Info("stopping-container", lager.Data{
+		"id": container.containerId,
+	})
+
 	return container.cli.ContainerStop(context.Background(), container.containerId, nil)
 }
 
@@ -205,17 +222,13 @@ func (container *container) NetOut(garden.NetOutRule) error { return nil }
 func (container *container) BulkNetOut([]garden.NetOutRule) error { return nil }
 
 func (container *container) Run(spec garden.ProcessSpec, processIO garden.ProcessIO) (garden.Process, error) {
-	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
-		User:         spec.User,
-		Env:          spec.Env,
-		Cmd:          append([]string{spec.Path}, spec.Args...),
-		WorkingDir:   spec.Dir,
-		AttachStdin:  processIO.Stdin != nil,
-		AttachStdout: processIO.Stdout != nil,
-		AttachStderr: processIO.Stderr != nil,
-		Tty:          spec.TTY.WindowSize != nil,
-	})
+	process, err := container.newProcess(container.logger, spec, processIO)
+	if err != nil {
+		return nil, err
+	}
 
+	process.Attach(processIO)
+	err = process.Start(spec.TTY)
 	if err != nil {
 		return nil, err
 	}
@@ -223,26 +236,7 @@ func (container *container) Run(spec garden.ProcessSpec, processIO garden.Proces
 	container.processesMutex.Lock()
 	defer container.processesMutex.Unlock()
 
-	processID := spec.ID
-	if processID == "" {
-		uuid, err := uuid.NewV4()
-		if err != nil {
-			return nil, err
-		}
-
-		processID = uuid.String()
-	}
-
-	process := process.NewProcess(container.cli, processID, container.containerId, resp.ID)
-
-	process.Attach(processIO)
-
-	err = process.Start(spec.TTY)
-	if err != nil {
-		return nil, err
-	}
-
-	container.processes[processID] = process
+	container.processes[process.ID()] = process
 
 	return process, nil
 }

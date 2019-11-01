@@ -57,6 +57,10 @@ func (backend *Backend) Start() error {
 func (backend *Backend) Stop() {
 	containers, _ := backend.Containers(nil)
 
+	backend.logger.Info("stopping", lager.Data{
+		"remaining-containers": len(containers),
+	})
+
 	for _, container := range containers {
 		backend.Destroy(container.Handle())
 	}
@@ -79,6 +83,10 @@ func (backend *Backend) Create(spec garden.ContainerSpec) (garden.Container, err
 	if err != nil {
 		return nil, err
 	}
+
+	backend.logger.Info("container-created", lager.Data{
+		"handle": container.Handle(),
+	})
 
 	backend.containersL.Lock()
 	backend.containers[container.Handle()] = container
