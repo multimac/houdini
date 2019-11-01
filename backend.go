@@ -75,20 +75,13 @@ func (backend *Backend) Capacity() (garden.Capacity, error) {
 }
 
 func (backend *Backend) Create(spec garden.ContainerSpec) (garden.Container, error) {
-
-	id := backend.generateContainerID()
-
-	if spec.Handle == "" {
-		spec.Handle = id
-	}
-
 	container, err := backend.newContainer(backend.logger, spec)
 	if err != nil {
 		return nil, err
 	}
 
 	backend.containersL.Lock()
-	backend.containers[spec.Handle] = container
+	backend.containers[container.Handle()] = container
 	backend.containersL.Unlock()
 
 	return container, nil

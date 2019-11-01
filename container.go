@@ -38,7 +38,9 @@ type container struct {
 	spec   garden.ContainerSpec
 	logger lager.Logger
 
-	handle         string
+	handle      string
+	containerId string
+
 	processes      map[string]*process.Process
 	processesMutex *sync.RWMutex
 
@@ -104,12 +106,19 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 		return nil, err
 	}
 
+	handle := resp.ID
+	if spec.Handle != "" {
+		handle = spec.Handle
+	}
+
 	return &container{
 		cli:    backend.cli,
 		spec:   spec,
 		logger: logger.Session("container"),
 
-		handle:         resp.ID,
+		handle:      handle,
+		containerId: resp.ID,
+
 		processes:      make(map[string]*process.Process),
 		processesMutex: new(sync.RWMutex),
 
@@ -120,7 +129,7 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 }
 
 func (container *container) cleanup() error {
-	return container.cli.ContainerRemove(context.Background(), container.handle, docker_types.ContainerRemoveOptions{
+	return container.cli.ContainerRemove(context.Background(), container.containerId, docker_types.ContainerRemoveOptions{
 		RemoveVolumes: true,
 		RemoveLinks:   true,
 		Force:         true,
@@ -132,20 +141,20 @@ func (container *container) Handle() string {
 }
 
 func (container *container) Stop(kill bool) error {
-	return container.cli.ContainerStop(context.Background(), container.handle, nil)
+	return container.cli.ContainerStop(context.Background(), container.containerId, nil)
 }
 
 func (container *container) Info() (garden.ContainerInfo, error) { return garden.ContainerInfo{}, nil }
 
 func (container *container) StreamIn(spec garden.StreamInSpec) error {
-	return container.cli.CopyToContainer(context.Background(), container.handle, spec.Path, spec.TarStream, docker_types.CopyToContainerOptions{
+	return container.cli.CopyToContainer(context.Background(), container.containerId, spec.Path, spec.TarStream, docker_types.CopyToContainerOptions{
 		AllowOverwriteDirWithFile: false,
 		CopyUIDGID:                false,
 	})
 }
 
 func (container *container) StreamOut(spec garden.StreamOutSpec) (io.ReadCloser, error) {
-	reader, _, err := container.cli.CopyFromContainer(context.Background(), container.handle, spec.Path)
+	reader, _, err := container.cli.CopyFromContainer(context.Background(), container.containerId, spec.Path)
 	return reader, err
 }
 
@@ -196,7 +205,7 @@ func (container *container) NetOut(garden.NetOutRule) error { return nil }
 func (container *container) BulkNetOut([]garden.NetOutRule) error { return nil }
 
 func (container *container) Run(spec garden.ProcessSpec, processIO garden.ProcessIO) (garden.Process, error) {
-	resp, err := container.cli.ContainerExecCreate(context.Background(), container.handle, docker_types.ExecConfig{
+	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
 		User:         spec.User,
 		Env:          spec.Env,
 		Cmd:          append([]string{spec.Path}, spec.Args...),
@@ -224,7 +233,7 @@ func (container *container) Run(spec garden.ProcessSpec, processIO garden.Proces
 		processID = uuid.String()
 	}
 
-	process := process.NewProcess(container.cli, processID, container.handle, resp.ID)
+	process := process.NewProcess(container.cli, processID, container.containerId, resp.ID)
 
 	process.Attach(processIO)
 
