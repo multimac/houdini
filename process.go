@@ -49,8 +49,8 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 
 	logger.Info("created", lager.Data{
 		"container": container.containerId,
-		"id":        handle,
-		"handle":    spec.ID,
+		"id":        resp.ID,
+		"handle":    handle,
 	})
 
 	process := &process{

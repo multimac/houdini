@@ -231,11 +231,19 @@ func (container *container) Run(spec garden.ProcessSpec, processIO garden.Proces
 		return nil, err
 	}
 
+	container.logger.Info("process-created", lager.Data{
+		"handle": process.ID(),
+	})
+
 	process.Attach(processIO)
 	err = process.Start(spec.TTY)
 	if err != nil {
 		return nil, err
 	}
+
+	container.logger.Info("process-started", lager.Data{
+		"handle": process.ID(),
+	})
 
 	container.processes[process.ID()] = process
 
