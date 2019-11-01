@@ -97,7 +97,7 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 
 	resp, err := backend.cli.ContainerCreate(context.Background(), &docker_container.Config{
 		Image:  image,
-		Cmd:    []string{"cmd.exe"},
+		Cmd:    []string{"c:\\windows\\system32\\cmd.exe"},
 		Env:    spec.Env,
 		Labels: properties,
 	}, nil, nil, "")
@@ -223,6 +223,9 @@ func (container *container) NetOut(garden.NetOutRule) error { return nil }
 func (container *container) BulkNetOut([]garden.NetOutRule) error { return nil }
 
 func (container *container) Run(spec garden.ProcessSpec, processIO garden.ProcessIO) (garden.Process, error) {
+	container.processesMutex.Lock()
+	defer container.processesMutex.Unlock()
+
 	process, err := container.newProcess(container.logger, spec, processIO)
 	if err != nil {
 		return nil, err
@@ -233,9 +236,6 @@ func (container *container) Run(spec garden.ProcessSpec, processIO garden.Proces
 	if err != nil {
 		return nil, err
 	}
-
-	container.processesMutex.Lock()
-	defer container.processesMutex.Unlock()
 
 	container.processes[process.ID()] = process
 
