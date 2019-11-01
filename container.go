@@ -103,6 +103,7 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 		Env:          spec.Env,
 		Image:        image,
 		Labels:       properties,
+		Tty:          true,
 	}, nil, nil, "")
 	if err != nil {
 		return nil, err
@@ -148,7 +149,6 @@ func (container *container) cleanup() error {
 
 	return container.cli.ContainerRemove(context.Background(), container.containerId, docker_types.ContainerRemoveOptions{
 		RemoveVolumes: true,
-		RemoveLinks:   true,
 		Force:         true,
 	})
 }

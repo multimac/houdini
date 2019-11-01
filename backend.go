@@ -2,9 +2,7 @@ package houdini
 
 import (
 	"context"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/garden"
@@ -157,23 +155,6 @@ func (backend *Backend) Lookup(handle string) (garden.Container, error) {
 	}
 
 	return container, nil
-}
-
-func (backend *Backend) generateContainerID() string {
-	containerNum := atomic.AddUint32(&backend.containerNum, 1)
-
-	containerID := []byte{}
-
-	var i uint64
-	for i = 0; i < 11; i++ {
-		containerID = strconv.AppendUint(
-			containerID,
-			(uint64(containerNum)>>(55-(i+1)*5))&31,
-			32,
-		)
-	}
-
-	return string(containerID)
 }
 
 func containerHasProperties(container *container, properties garden.Properties) bool {
