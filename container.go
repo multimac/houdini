@@ -96,10 +96,13 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 	loadResp.Body.Close()
 
 	resp, err := backend.cli.ContainerCreate(context.Background(), &docker_container.Config{
-		Image:  image,
-		Cmd:    []string{"c:\\windows\\system32\\cmd.exe"},
-		Env:    spec.Env,
-		Labels: properties,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          []string{"c:\\windows\\system32\\cmd.exe"},
+		Env:          spec.Env,
+		Image:        image,
+		Labels:       properties,
 	}, nil, nil, "")
 	if err != nil {
 		return nil, err
