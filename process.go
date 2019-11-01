@@ -3,7 +3,6 @@ package houdini
 import (
 	"context"
 	"io"
-	"sync"
 
 	"code.cloudfoundry.org/garden"
 	"code.cloudfoundry.org/lager"
@@ -14,15 +13,12 @@ import (
 )
 
 type process struct {
-	logger      lager.Logger
-	cli         *client.Client
+	logger lager.Logger
+	cli    *client.Client
+
 	containerId string
 	execId      string
-	id          string
-
-	waiting    *sync.Once
-	exitStatus int
-	exitErr    error
+	handle      string
 
 	stdin  *faninWriter
 	stdout *fanoutWriter
@@ -46,19 +42,24 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 		return nil, err
 	}
 
-	logger.Info("process-created", lager.Data{
+	handle := resp.ID
+	if spec.ID != "" {
+		handle = spec.ID
+	}
+
+	logger.Info("created", lager.Data{
 		"container": container.containerId,
-		"id":        resp.ID,
+		"id":        handle,
+		"handle":    spec.ID,
 	})
 
 	process := &process{
-		cli:         container.cli,
-		logger:      logger,
+		cli:    container.cli,
+		logger: logger,
+
 		containerId: container.containerId,
 		execId:      resp.ID,
-		id:          spec.ID,
-
-		waiting: &sync.Once{},
+		handle:      handle,
 
 		stdin:  &faninWriter{hasSink: make(chan struct{})},
 		stdout: &fanoutWriter{},
@@ -69,7 +70,7 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 }
 
 func (process *process) ID() string {
-	return process.id
+	return process.handle
 }
 
 func (process *process) Wait() (int, error) {

@@ -25,6 +25,8 @@ type Backend struct {
 }
 
 func NewBackend(containersDir string, logger lager.Logger) *Backend {
+	logger = logger.Session("backend")
+
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		panic(err)
@@ -32,7 +34,7 @@ func NewBackend(containersDir string, logger lager.Logger) *Backend {
 
 	return &Backend{
 		cli:    cli,
-		logger: logger.Session("backend"),
+		logger: logger,
 
 		containersDir: containersDir,
 		containers:    make(map[string]*container),

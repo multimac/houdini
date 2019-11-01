@@ -111,8 +111,9 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 	}
 
 	logger.Info("container-created", lager.Data{
-		"image": image,
-		"id":    resp.ID,
+		"image":  image,
+		"id":     resp.ID,
+		"handle": handle,
 	})
 
 	err = backend.cli.ContainerStart(context.Background(), resp.ID, docker_types.ContainerStartOptions{})
