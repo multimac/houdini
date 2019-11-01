@@ -33,7 +33,6 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 	logger = logger.Session("process")
 
 	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
-		User:         spec.User,
 		Env:          spec.Env,
 		Cmd:          append([]string{spec.Path}, spec.Args...),
 		WorkingDir:   spec.Dir,
