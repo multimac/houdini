@@ -3,11 +3,11 @@ package houdini
 import (
 	"context"
 	"io"
+	"sync"
 
 	"code.cloudfoundry.org/garden"
 	"code.cloudfoundry.org/lager"
 	docker_types "github.com/docker/docker/api/types"
-	docker_container "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
@@ -19,6 +19,8 @@ type process struct {
 	containerId string
 	execId      string
 	handle      string
+
+	waitHandle *sync.WaitGroup
 
 	stdin  *faninWriter
 	stdout *fanoutWriter
@@ -61,6 +63,8 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 		execId:      resp.ID,
 		handle:      handle,
 
+		waitHandle: &sync.WaitGroup{},
+
 		stdin:  &faninWriter{hasSink: make(chan struct{})},
 		stdout: &fanoutWriter{},
 		stderr: &fanoutWriter{},
@@ -74,16 +78,15 @@ func (process *process) ID() string {
 }
 
 func (process *process) Wait() (int, error) {
-	statusCh, errCh := process.cli.ContainerWait(context.Background(), process.containerId, docker_container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return -1, err
-		}
-	case body := <-statusCh:
-		return int(body.StatusCode), nil
+	process.waitHandle.Wait()
+
+	resp, err := process.cli.ContainerExecInspect(context.Background(), process.execId)
+
+	if err != nil {
+		return -1, err
 	}
-	return -1, nil
+
+	return resp.ExitCode, err
 }
 
 func (process *process) SetTTY(tty garden.TTYSpec) error {
@@ -116,11 +119,15 @@ func (process *process) Start(tty *garden.TTYSpec) error {
 		return err
 	}
 
-	if tty.WindowSize == nil {
-		go stdcopy.StdCopy(process.stdout, process.stderr, resp.Reader)
-	} else {
-		go io.Copy(process.stdout, resp.Reader)
-	}
+	process.waitHandle.Add(1)
+	go func() {
+		if tty.WindowSize == nil {
+			stdcopy.StdCopy(process.stdout, process.stderr, resp.Reader)
+		} else {
+			io.Copy(process.stdout, resp.Reader)
+		}
+		process.waitHandle.Done()
+	}()
 
 	process.stdin.AddSink(resp.Conn)
 	return nil
