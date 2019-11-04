@@ -33,4 +33,6 @@ require (
 
 replace github.com/docker/docker => github.com/docker/engine v1.4.2-0.20191011211953-adfac697dc5b
 
+replace github.com/vito/houdini => github.com/multimac/houdini v1.1.2-0.20191101070402-f648e84eaa6f
+
 go 1.13

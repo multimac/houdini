@@ -13,7 +13,7 @@ import (
 
 	"code.cloudfoundry.org/garden/server"
 	"code.cloudfoundry.org/lager"
-	"github.com/multimac/houdini"
+	"github.com/vito/houdini"
 )
 
 var listenNetwork = flag.String(

@@ -12,6 +12,7 @@ import (
 	"code.cloudfoundry.org/lager"
 	docker_types "github.com/docker/docker/api/types"
 	docker_container "github.com/docker/docker/api/types/container"
+	docker_mount "github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 )
 
@@ -68,10 +69,9 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 
 		switch rootfsURI.Scheme {
 		case "docker":
+			image = rootfsURI.Path[1:]
 			if rootfsURI.Fragment != "" {
-				image = rootfsURI.Path[1:] + ":" + rootfsURI.Fragment
-			} else {
-				image = rootfsURI.Path[1:] + ":latest"
+				image += ":" + rootfsURI.Fragment
 			}
 		default:
 			return nil, fmt.Errorf("unsupported rootfs uri (must be docker://): %s", spec.RootFSPath)
@@ -95,6 +95,16 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 	}
 	loadResp.Body.Close()
 
+	mounts := make([]docker_mount.Mount, len(spec.BindMounts))
+	for i, v := range spec.BindMounts {
+		mounts[i] = docker_mount.Mount{
+			Type:     docker_mount.TypeBind,
+			Source:   v.SrcPath,
+			Target:   v.DstPath,
+			ReadOnly: v.Mode == garden.BindMountModeRO,
+		}
+	}
+
 	resp, err := backend.cli.ContainerCreate(context.Background(), &docker_container.Config{
 		AttachStdin:  true,
 		AttachStdout: true,
@@ -104,7 +114,9 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 		Image:        image,
 		Labels:       properties,
 		Tty:          true,
-	}, nil, nil, "")
+	}, &docker_container.HostConfig{
+		Mounts: mounts,
+	}, nil, "")
 	if err != nil {
 		return nil, err
 	}

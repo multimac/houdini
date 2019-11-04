@@ -3,6 +3,7 @@ package houdini
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 
 	"code.cloudfoundry.org/garden"
@@ -30,9 +31,17 @@ type process struct {
 func (container *container) newProcess(logger lager.Logger, spec garden.ProcessSpec, processIO garden.ProcessIO) (*process, error) {
 	logger = logger.Session("process")
 
+	path := spec.Path
+	if !strings.HasSuffix(strings.ToLower(path), ".exe") {
+		logger.Info("adding-exe-suffix", lager.Data{
+			"command": path,
+		})
+		path += ".exe"
+	}
+
 	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
 		Env:          spec.Env,
-		Cmd:          append([]string{spec.Path}, spec.Args...),
+		Cmd:          append([]string{path}, spec.Args...),
 		WorkingDir:   spec.Dir,
 		AttachStdin:  processIO.Stdin != nil,
 		AttachStdout: processIO.Stdout != nil,
