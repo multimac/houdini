@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,15 +97,51 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 	}
 	loadResp.Body.Close()
 
-	mounts := make([]docker_mount.Mount, len(spec.BindMounts))
-	for i, mnt := range spec.BindMounts {
-		mounts[i] = docker_mount.Mount{
+	mounts := make([]docker_mount.Mount, 0, 1)
+	for _, mnt := range spec.BindMounts {
+		newMount := docker_mount.Mount{
 			Type:     docker_mount.TypeBind,
 			Source:   sanitizeWindowsPath(mnt.SrcPath),
 			Target:   sanitizeWindowsPath(mnt.DstPath),
 			ReadOnly: mnt.Mode == garden.BindMountModeRO,
 		}
+
+		shadowed := false
+		for i := range mounts {
+			current := mounts[i]
+			parent, err := findParent(newMount.Target, current.Target)
+			if err == nil {
+				logger.Debug("comparing-mounts", lager.Data{
+					"current": current,
+					"new":     newMount,
+				})
+
+				if parent == current.Target {
+					logger.Debug("replacing-mount", lager.Data{
+						"mount":     current,
+						"shadowing": newMount,
+					})
+					mounts[i] = newMount
+				} else {
+					logger.Debug("ignoring-mount", lager.Data{
+						"mount":     newMount,
+						"shadowing": current,
+					})
+				}
+
+				shadowed = true
+				break
+			}
+		}
+
+		if !shadowed {
+			mounts = append(mounts, newMount)
+		}
 	}
+
+	logger.Debug("container-mounts", lager.Data{
+		"mounts": mounts,
+	})
 
 	resp, err := backend.cli.ContainerCreate(context.Background(), &docker_container.Config{
 		AttachStdin:  true,
@@ -369,4 +407,29 @@ func (container *container) unregister(processID string) {
 	defer container.processesMutex.Unlock()
 
 	delete(container.processes, processID)
+}
+
+func findParent(left string, right string) (string, error) {
+	leftRel, leftErr := filepath.Rel(left, right)
+	if leftErr == nil && leftRel != ".." && !strings.HasPrefix(leftRel, ".."+string(filepath.Separator)) {
+		return left, nil
+	}
+
+	rightRel, rightErr := filepath.Rel(right, left)
+	if rightErr == nil && rightRel != ".." && !strings.HasPrefix(rightRel, ".."+string(filepath.Separator)) {
+		return right, nil
+	}
+
+	var errors []string
+	if leftErr != nil {
+		errors = append(errors, fmt.Sprintf("Failed to compare %q with %q: %q", left, right, leftErr))
+	}
+	if rightErr != nil {
+		errors = append(errors, fmt.Sprintf("Failed to compare %q with %q: %q", right, left, leftErr))
+	}
+	if len(errors) > 0 {
+		return "", fmt.Errorf(strings.Join(errors, "\n"))
+	}
+
+	return "", fmt.Errorf("Neither %q or %q is a parent of the other", left, right)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"code.cloudfoundry.org/garden"
@@ -35,7 +34,7 @@ func (container *container) newProcess(logger lager.Logger, spec garden.ProcessS
 	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
 		Env: spec.Env,
 		Cmd: append(
-			[]string{executablePath(spec.Path)},
+			[]string{spec.Path},
 			spec.Args...),
 		WorkingDir:   sanitizeWindowsPath(spec.Dir),
 		AttachStdin:  processIO.Stdin != nil,
@@ -155,21 +154,11 @@ func (process *process) Signal(signal garden.Signal) error {
 	return nil
 }
 
-func executablePath(path string) string {
-	path = sanitizeWindowsPath(path)
-
-	var loweredPath = strings.ToLower(path)
-	if !strings.HasSuffix(loweredPath, ".exe") {
-		path += ".exe"
-	}
-
-	return path
-}
-
 func sanitizeWindowsPath(path string) string {
 	if filepath.VolumeName(path) == "" {
 		path = `C:` + path
 	}
 
+	path = filepath.Clean(path)
 	return filepath.FromSlash(path)
 }
