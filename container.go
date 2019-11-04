@@ -96,12 +96,12 @@ func (backend *Backend) newContainer(logger lager.Logger, spec garden.ContainerS
 	loadResp.Body.Close()
 
 	mounts := make([]docker_mount.Mount, len(spec.BindMounts))
-	for i, v := range spec.BindMounts {
+	for i, mnt := range spec.BindMounts {
 		mounts[i] = docker_mount.Mount{
 			Type:     docker_mount.TypeBind,
-			Source:   v.SrcPath,
-			Target:   v.DstPath,
-			ReadOnly: v.Mode == garden.BindMountModeRO,
+			Source:   sanitizeWindowsPath(mnt.SrcPath),
+			Target:   sanitizeWindowsPath(mnt.DstPath),
+			ReadOnly: mnt.Mode == garden.BindMountModeRO,
 		}
 	}
 

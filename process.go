@@ -3,6 +3,7 @@ package houdini
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -31,18 +32,12 @@ type process struct {
 func (container *container) newProcess(logger lager.Logger, spec garden.ProcessSpec, processIO garden.ProcessIO) (*process, error) {
 	logger = logger.Session("process")
 
-	path := spec.Path
-	if !strings.HasSuffix(strings.ToLower(path), ".exe") {
-		logger.Info("adding-exe-suffix", lager.Data{
-			"command": path,
-		})
-		path += ".exe"
-	}
-
 	resp, err := container.cli.ContainerExecCreate(context.Background(), container.containerId, docker_types.ExecConfig{
-		Env:          spec.Env,
-		Cmd:          append([]string{path}, spec.Args...),
-		WorkingDir:   spec.Dir,
+		Env: spec.Env,
+		Cmd: append(
+			[]string{executablePath(spec.Path)},
+			spec.Args...),
+		WorkingDir:   sanitizeWindowsPath(spec.Dir),
 		AttachStdin:  processIO.Stdin != nil,
 		AttachStdout: processIO.Stdout != nil,
 		AttachStderr: processIO.Stderr != nil,
@@ -158,4 +153,23 @@ func (process *process) Attach(processIO garden.ProcessIO) {
 
 func (process *process) Signal(signal garden.Signal) error {
 	return nil
+}
+
+func executablePath(path string) string {
+	path = sanitizeWindowsPath(path)
+
+	var loweredPath = strings.ToLower(path)
+	if !strings.HasSuffix(loweredPath, ".exe") {
+		path += ".exe"
+	}
+
+	return path
+}
+
+func sanitizeWindowsPath(path string) string {
+	if filepath.VolumeName(path) == "" {
+		path = `C:` + path
+	}
+
+	return filepath.FromSlash(path)
 }
